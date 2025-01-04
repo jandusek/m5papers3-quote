@@ -13,133 +13,60 @@
 // Configuration structure
 struct QuoteDisplayConfig {
     M5GFX* display;
-    const GFXfont* mainFont;
-    const GFXfont* boldFont;
+    const GFXfont* mainFont20;
+    const GFXfont* boldFont20;
+    const GFXfont* mainFont18;
+    const GFXfont* boldFont18;
     float widthThreshold;
 };
 
 // Function declarations
-static int32_t calculateVerticalSpacing(QuoteDisplayConfig* qd);
-static void drawTextLines(QuoteDisplayConfig* qd, const char* text, int32_t* yPos, bool isBold);
 void connectToWiFi();
 bool fetchQuote(String& quote, String& followup, String& author, String& context);
 
-// The actual M5GFX display
+// The actual M5GFX display and config
 M5GFX display;
 QuoteDisplayConfig quoteDisplay;
-
-// WiFi connection status
 bool isWiFiConnected = false;
 
-// Implementation
-void quoteDisplay_init(QuoteDisplayConfig* qd, M5GFX* display) {
-    qd->display = display;
-    qd->widthThreshold = 0.9f;
-}
-
-void quoteDisplay_setFonts(QuoteDisplayConfig* qd, const GFXfont* regularFont, const GFXfont* boldFont) {
-    qd->mainFont = regularFont;
-    qd->boldFont = boldFont;
-}
-
-void connectToWiFi() {
-    Serial.print("Connecting to WiFi");
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ENV_WIFI_SSID, ENV_WIFI_PASSWORD);
-    
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-        delay(500);
-        Serial.print(".");
-        attempts++;
+// Helper function to count actual newlines in text
+static int countNewlines(const String& text) {
+    int count = 0;
+    int pos = 0;
+    while ((pos = text.indexOf('\n', pos)) != -1) {
+        count++;
+        pos++;
     }
-    
-    isWiFiConnected = (WiFi.status() == WL_CONNECTED);
-    if (isWiFiConnected) {
-        Serial.println("\nConnected to WiFi");
-    } else {
-        Serial.println("\nFailed to connect to WiFi");
-    }
+    return count;
 }
 
-bool fetchQuote(String& quote, String& followup, String& author, String& context) {
-    if (!isWiFiConnected) {
-        Serial.println("WiFi not connected");
-        return false;
-    }
-    
-    WiFiClientSecure client;
-    client.setInsecure();  // Skip certificate verification
-    
-    HTTPClient https;
-    Serial.println("Fetching quote from API...");
-    
-    if (https.begin(client, ENV_QUOTE_URL)) {
-        int httpCode = https.GET();
-        Serial.printf("HTTP Response code: %d\n", httpCode);
-        
-        if (httpCode == HTTP_CODE_OK) {
-            String payload = https.getString();
-            https.end();
-            
-            // Use a larger buffer for JSON parsing
-            DynamicJsonDocument doc(2048);
-            DeserializationError error = deserializeJson(doc, payload);
-            
-            if (!error) {
-                quote = doc["quote"].as<String>();
-                followup = doc["followup"].isNull() ? "" : doc["followup"].as<String>();
-                author = doc["author"].as<String>();
-                context = doc["context"].isNull() ? "" : doc["context"].as<String>();
-                Serial.println("Quote fetched successfully");
-                return true;
-            } else {
-                Serial.print("JSON parsing failed: ");
-                Serial.println(error.c_str());
-            }
-        }
-        https.end();
-    } else {
-        Serial.println("HTTPS connection failed");
-    }
-    return false;
-}
-
-static int32_t calculateVerticalSpacing(QuoteDisplayConfig* qd) {
-    return qd->display->fontHeight() * 0.5;
-}
-
-// First, modify the normalizeQuotes function to handle newlines
+// Helper function to normalize quotes and line endings
 static String normalizeQuotes(const String& input) {
     String output = input;
     
-    // Create a buffer for UTF-8 characters
-    char leftSingleQuote[] = {0xE2, 0x80, 0x98, 0}; // U+2018 Left single quote
-    char rightSingleQuote[] = {0xE2, 0x80, 0x99, 0}; // U+2019 Right single quote
-    char leftDoubleQuote[] = {0xE2, 0x80, 0x9C, 0}; // U+201C Left double quote
-    char rightDoubleQuote[] = {0xE2, 0x80, 0x9D, 0}; // U+201D Right double quote
+    // Replace fancy quotes with ASCII equivalents
+    char leftSingleQuote[] = {0xE2, 0x80, 0x98, 0}; // U+2018
+    char rightSingleQuote[] = {0xE2, 0x80, 0x99, 0}; // U+2019
+    char leftDoubleQuote[] = {0xE2, 0x80, 0x9C, 0}; // U+201C
+    char rightDoubleQuote[] = {0xE2, 0x80, 0x9D, 0}; // U+201D
     
-    // Replace quotes with ASCII equivalents
     output.replace(leftSingleQuote, "'");
     output.replace(rightSingleQuote, "'");
     output.replace(leftDoubleQuote, "\"");
     output.replace(rightDoubleQuote, "\"");
-    
-    // Convert Windows-style newlines to Unix-style
     output.replace("\r\n", "\n");
     
     return output;
 }
 
-// Modified calculateLines function to not count newlines as extra lines
-static int32_t calculateLines(QuoteDisplayConfig* qd, const char* text) {
+// Calculate number of lines needed for text with given font
+static int32_t calculateLines(QuoteDisplayConfig* qd, const char* text, const GFXfont* font) {
+    qd->display->setFont(font);
     String remaining = text;
     int32_t maxWidth = qd->display->width() * qd->widthThreshold;
     int lineCount = 0;
     
-    // Split text into paragraphs by newline
     while (remaining.length() > 0) {
-        // Find next newline
         int newlinePos = remaining.indexOf('\n');
         String paragraph;
         
@@ -151,12 +78,8 @@ static int32_t calculateLines(QuoteDisplayConfig* qd, const char* text) {
             remaining = "";
         }
         
-        // Skip empty paragraphs
-        if (paragraph.length() == 0) {
-            continue;
-        }
+        if (paragraph.length() == 0) continue;
         
-        // Process each paragraph
         while (paragraph.length() > 0) {
             lineCount++;
             int breakPoint = paragraph.length();
@@ -178,9 +101,7 @@ static int32_t calculateLines(QuoteDisplayConfig* qd, const char* text) {
                     breakPoint = 1;
                     while (breakPoint < paragraph.length()) {
                         String testStr = paragraph.substring(0, breakPoint + 1);
-                        if (qd->display->textWidth(testStr.c_str()) > maxWidth) {
-                            break;
-                        }
+                        if (qd->display->textWidth(testStr.c_str()) > maxWidth) break;
                         breakPoint++;
                     }
                     break;
@@ -195,106 +116,17 @@ static int32_t calculateLines(QuoteDisplayConfig* qd, const char* text) {
     return lineCount;
 }
 
-// Modified quoteDisplay_show function
-void quoteDisplay_show(QuoteDisplayConfig* qd, const char* quote, const char* followup, const char* author) {
-    Serial.println("\n=== Debug Information ===");
-    Serial.printf("Display dimensions: %dx%d\n", qd->display->width(), qd->display->height());
-    
-    qd->display->startWrite();
-    qd->display->fillScreen(TFT_WHITE);
-    qd->display->setTextColor(TFT_BLACK);
-    
-    // Normalize quotes in all text
-    String normalizedQuote = normalizeQuotes(quote);
-    String normalizedFollowup = followup ? normalizeQuotes(followup) : "";
-    String normalizedAuthor = normalizeQuotes(author);
-    
-    int numNewlines = countNewlines(normalizedQuote);
-    Serial.printf("\nText Analysis:\n");
-    Serial.printf("Number of explicit newlines: %d\n", numNewlines);
-    
-    // Calculate line counts using normalized text
-    qd->display->setFont(qd->mainFont);
-    int32_t quoteLines = calculateLines(qd, normalizedQuote.c_str());
-    int32_t followupLines = followup ? calculateLines(qd, normalizedFollowup.c_str()) : 0;
-    
-    Serial.printf("\nLine counts:\n");
-    Serial.printf("- Quote lines: %d\n", quoteLines);
-    Serial.printf("- Followup lines: %d\n", followupLines);
-    
-    // Define spacing constants
-    const int32_t LINE_SPACING = 5;           // Space between lines within same text block
-    const int32_t NEWLINE_EXTRA = 15;         // Additional space for explicit newlines
-    const int32_t BLOCK_SPACING = calculateVerticalSpacing(qd);  // Space between different text blocks
-    
-    // Calculate font heights
-    int32_t mainFontHeight = qd->display->fontHeight();
-    qd->display->setFont(qd->boldFont);
-    int32_t boldFontHeight = qd->display->fontHeight();
-    qd->display->setFont(qd->mainFont);  // Switch back
-    
-    // Calculate individual component heights including internal line spacing
-    int32_t quoteHeight = (quoteLines - 1) * (mainFontHeight + LINE_SPACING) + 
-                         mainFontHeight +
-                         (numNewlines * NEWLINE_EXTRA);  // Add extra space for newlines
-    
-    int32_t followupHeight = followupLines > 0 ? 
-        (followupLines - 1) * (mainFontHeight + LINE_SPACING) + mainFontHeight : 0;
-    int32_t authorHeight = boldFontHeight;
-    
-    Serial.printf("\nComponent heights:\n");
-    Serial.printf("- Font height: %d\n", mainFontHeight);
-    Serial.printf("- Line spacing: %d\n", LINE_SPACING);
-    Serial.printf("- Newline extra: %d\n", NEWLINE_EXTRA);
-    Serial.printf("- Quote height: %d\n", quoteHeight);
-    Serial.printf("- Followup height: %d\n", followupHeight);
-    Serial.printf("- Author height: %d\n", authorHeight);
-    
-    // Calculate total height including all spacing
-    int32_t totalHeight = quoteHeight +                          // Quote block
-                         (followupHeight > 0 ? BLOCK_SPACING + followupHeight : 0) +  // Followup block with spacing
-                         BLOCK_SPACING + authorHeight;            // Author block with spacing
-    
-    // Calculate starting Y position for true vertical centering
-    int32_t currentY = (qd->display->height() - totalHeight) / 2;
-    
-    Serial.printf("\nFinal calculations:\n");
-    Serial.printf("- Total content height: %d\n", totalHeight);
-    Serial.printf("- Display height: %d\n", qd->display->height());
-    Serial.printf("- Starting Y position: %d\n", currentY);
-    
-    // Draw the text using normalized versions
-    Serial.println("\nDrawing positions:");
-    Serial.printf("- Starting quote at Y: %d\n", currentY);
-    drawTextLines(qd, normalizedQuote.c_str(), &currentY, false);
-    Serial.printf("- After quote, Y is: %d\n", currentY);
-    
-    if (followup && strlen(followup) > 0) {
-        currentY += BLOCK_SPACING;
-        Serial.printf("- Starting followup at Y: %d\n", currentY);
-        drawTextLines(qd, normalizedFollowup.c_str(), &currentY, false);
-        Serial.printf("- After followup, Y is: %d\n", currentY);
-    }
-    
-    currentY += BLOCK_SPACING;
-    Serial.printf("- Starting author at Y: %d\n", currentY);
-    drawTextLines(qd, normalizedAuthor.c_str(), &currentY, true);
-    Serial.printf("- Final Y position: %d\n", currentY);
-    
-    qd->display->endWrite();
-    qd->display->display();
-}
-
-// Modify the drawTextLines function to handle explicit newlines
-static void drawTextLines(QuoteDisplayConfig* qd, const char* text, int32_t* yPos, bool isBold) {
-    qd->display->setFont(isBold ? qd->boldFont : qd->mainFont);
+// Draw text with automatic line breaks
+static void drawTextLines(QuoteDisplayConfig* qd, const char* text, int32_t* yPos, bool isBold, bool use20pt) {
+    const GFXfont* font = isBold ? 
+        (use20pt ? qd->boldFont20 : qd->boldFont18) : 
+        (use20pt ? qd->mainFont20 : qd->mainFont18);
+    qd->display->setFont(font);
     
     String remaining = text;
     int32_t maxWidth = qd->display->width() * qd->widthThreshold;
     
-    // Split text into paragraphs by newline
     while (remaining.length() > 0) {
-        // Find next newline
         int newlinePos = remaining.indexOf('\n');
         String paragraph;
         
@@ -306,7 +138,11 @@ static void drawTextLines(QuoteDisplayConfig* qd, const char* text, int32_t* yPo
             remaining = "";
         }
         
-        // Process each paragraph
+        if (paragraph.length() == 0) {
+            *yPos += 15; // Extra space for explicit newlines
+            continue;
+        }
+        
         while (paragraph.length() > 0) {
             int breakPoint = paragraph.length();
             int32_t lineWidth;
@@ -328,9 +164,7 @@ static void drawTextLines(QuoteDisplayConfig* qd, const char* text, int32_t* yPo
                     breakPoint = 1;
                     while (breakPoint < paragraph.length()) {
                         String testStr = paragraph.substring(0, breakPoint + 1);
-                        if (qd->display->textWidth(testStr.c_str()) > maxWidth) {
-                            break;
-                        }
+                        if (qd->display->textWidth(testStr.c_str()) > maxWidth) break;
                         breakPoint++;
                     }
                     break;
@@ -350,38 +184,132 @@ static void drawTextLines(QuoteDisplayConfig* qd, const char* text, int32_t* yPo
             paragraph.trim();
         }
         
-        // Add extra spacing after each explicit newline if there's more text
         if (remaining.length() > 0) {
-            *yPos += 10; // Additional spacing for explicit newlines
+            *yPos += 10; // Extra space between paragraphs
         }
     }
 }
 
-// Debug helper function to count actual newlines in text
-static int countNewlines(const String& text) {
-    int count = 0;
-    int pos = 0;
-    while ((pos = text.indexOf('\n', pos)) != -1) {
-        count++;
-        pos++;
-    }
-    return count;
+// Calculate total height needed for text
+static int32_t calculateTotalHeight(QuoteDisplayConfig* qd, const String& quote, const String& followup, 
+                                  const String& author, bool use20pt) {
+    const GFXfont* mainFont = use20pt ? qd->mainFont20 : qd->mainFont18;
+    const GFXfont* boldFont = use20pt ? qd->boldFont20 : qd->boldFont18;
+    
+    qd->display->setFont(mainFont);
+    int32_t quoteLines = calculateLines(qd, quote.c_str(), mainFont);
+    int32_t followupLines = followup.length() > 0 ? calculateLines(qd, followup.c_str(), mainFont) : 0;
+    int numNewlines = countNewlines(quote);
+    
+    int32_t mainFontHeight = qd->display->fontHeight();
+    qd->display->setFont(boldFont);
+    int32_t boldFontHeight = qd->display->fontHeight();
+    
+    const int32_t LINE_SPACING = 5;
+    const int32_t NEWLINE_EXTRA = 15;
+    const int32_t BLOCK_SPACING = mainFontHeight * 0.5;
+    
+    int32_t quoteHeight = (quoteLines - 1) * (mainFontHeight + LINE_SPACING) + 
+                         mainFontHeight + (numNewlines * NEWLINE_EXTRA);
+    int32_t followupHeight = followupLines > 0 ? 
+        (followupLines - 1) * (mainFontHeight + LINE_SPACING) + mainFontHeight : 0;
+    
+    return quoteHeight + 
+           (followupHeight > 0 ? BLOCK_SPACING + followupHeight : 0) + 
+           BLOCK_SPACING + boldFontHeight;
 }
 
+void quoteDisplay_init(QuoteDisplayConfig* qd, M5GFX* display) {
+    qd->display = display;
+    qd->mainFont20 = &Literata_24pt_Regular20pt7b;
+    qd->boldFont20 = &Literata_24pt_Bold20pt7b;
+    qd->mainFont18 = &Literata_24pt_Regular18pt7b;
+    qd->boldFont18 = &Literata_24pt_Bold18pt7b;
+    qd->widthThreshold = 0.9f;
+}
 
-
-void setup(void) {
-    Serial.begin(115200);
-    delay(1000);  // Give serial time to initialize
-    Serial.println("Starting up...");
+void quoteDisplay_show(QuoteDisplayConfig* qd, const char* quote, const char* followup, const char* author) {
+    String normalizedQuote = normalizeQuotes(quote);
+    String normalizedFollowup = followup ? normalizeQuotes(followup) : "";
+    String normalizedAuthor = normalizeQuotes(author);
     
+    // Try 20pt first, fall back to 18pt if content doesn't fit
+    bool use20pt = calculateTotalHeight(qd, normalizedQuote, normalizedFollowup, normalizedAuthor, true) <= 
+                   qd->display->height();
+    
+    // Calculate final layout with chosen font
+    int32_t totalHeight = calculateTotalHeight(qd, normalizedQuote, normalizedFollowup, 
+                                             normalizedAuthor, use20pt);
+    int32_t currentY = (qd->display->height() - totalHeight) / 2;
+    
+    // Draw content
+    qd->display->startWrite();
+    qd->display->fillScreen(TFT_WHITE);
+    qd->display->setTextColor(TFT_BLACK);
+    
+    drawTextLines(qd, normalizedQuote.c_str(), &currentY, false, use20pt);
+    
+    if (followup && strlen(followup) > 0) {
+        currentY += qd->display->fontHeight() * 0.5;
+        drawTextLines(qd, normalizedFollowup.c_str(), &currentY, false, use20pt);
+    }
+    
+    currentY += qd->display->fontHeight() * 0.5;
+    drawTextLines(qd, normalizedAuthor.c_str(), &currentY, true, use20pt);
+    
+    qd->display->endWrite();
+    qd->display->display();
+}
+
+void connectToWiFi() {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ENV_WIFI_SSID, ENV_WIFI_PASSWORD);
+    
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        attempts++;
+    }
+    
+    isWiFiConnected = (WiFi.status() == WL_CONNECTED);
+}
+
+bool fetchQuote(String& quote, String& followup, String& author, String& context) {
+    if (!isWiFiConnected) return false;
+    
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient https;
+    
+    if (https.begin(client, ENV_QUOTE_URL)) {
+        int httpCode = https.GET();
+        
+        if (httpCode == HTTP_CODE_OK) {
+            String payload = https.getString();
+            https.end();
+            
+            DynamicJsonDocument doc(2048);
+            DeserializationError error = deserializeJson(doc, payload);
+            
+            if (!error) {
+                quote = doc["quote"].as<String>();
+                followup = doc["followup"].isNull() ? "" : doc["followup"].as<String>();
+                author = doc["author"].as<String>();
+                context = doc["context"].isNull() ? "" : doc["context"].as<String>();
+                return true;
+            }
+        }
+        https.end();
+    }
+    return false;
+}
+
+void setup() {
     // Initialize display
     display.init();
-    Serial.println("Display initialized");
     
     if (display.isEPD()) {
-        display.setEpdMode(epd_mode_t::epd_quality);  // Changed from epd_fastest to epd_quality
-        Serial.println("EPD mode set to quality");
+        display.setEpdMode(epd_mode_t::epd_quality);
     }
     
     if (display.width() < display.height()) {
@@ -389,39 +317,30 @@ void setup(void) {
     }
     
     quoteDisplay_init(&quoteDisplay, &display);
-    quoteDisplay_setFonts(&quoteDisplay, &Literata_24pt_Regular18pt7b, &Literata_24pt_Bold18pt7b);
     
-    // Connect to WiFi
+    // Connect and fetch quote
     connectToWiFi();
-    
-    // Default quote in case of connection failure
     String quote = "Unable to fetch quote";
     String followup = "";
     String author = "Check WiFi connection";
     String context = "";
     
     if (isWiFiConnected) {
-        if (!fetchQuote(quote, followup, author, context)) {
+        if (fetchQuote(quote, followup, author, context)) {
+            if (context.length() > 0) {
+                followup = followup.length() > 0 ? followup + " - " + context : context;
+            }
+        } else {
             quote = "Failed to fetch quote";
             author = "Check API connection";
-        }
-        // If context exists, append it to followup
-        if (context.length() > 0) {
-            if (followup.length() > 0) {
-                followup += " - " + context;
-            } else {
-                followup = context;
-            }
         }
     }
     
     quoteDisplay_show(&quoteDisplay, quote.c_str(), 
                      followup.length() > 0 ? followup.c_str() : NULL, 
                      author.c_str());
-                     
-    Serial.println("Setup complete");
 }
 
-void loop(void) {
+void loop() {
     delay(1000);
 }
