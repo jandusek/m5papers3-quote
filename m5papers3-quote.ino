@@ -29,6 +29,11 @@ M5GFX display;
 QuoteDisplayConfig quoteDisplay;
 bool isWiFiConnected = false;
 
+const int QUOTE_REFRESH_INTERVAL = 60; // how often should a new quote be shown
+const int MAX_RETRIES = 5; // how many times to retry fetching a quote when the first attempt fails
+const int BASE_ERROR_SLEEP_SEC = 60; // how long to sleep when the first attempt fails
+RTC_DATA_ATTR int bootCount = 0; // how many attempts were already made
+
 // Helper function to count actual newlines in text
 static int countNewlines(const String& text) {
     int count = 0;
@@ -325,8 +330,10 @@ void setup() {
     String author = "Check WiFi connection";
     String context = "";
     
+    bool success = false;
     if (isWiFiConnected) {
         if (fetchQuote(quote, followup, author, context)) {
+            success = true;
             if (context.length() > 0) {
                 followup = followup.length() > 0 ? followup + " - " + context : context;
             }
@@ -339,8 +346,25 @@ void setup() {
     quoteDisplay_show(&quoteDisplay, quote.c_str(), 
                      followup.length() > 0 ? followup.c_str() : NULL, 
                      author.c_str());
+
+    // Calculate sleep duration based on success/failure
+    uint64_t sleepTime;
+    if (success) {
+        bootCount = 0;  // Reset retry counter on success
+        sleepTime = QUOTE_REFRESH_INTERVAL * 1000000ULL;  // 60 seconds
+    } else {
+        bootCount++;
+        sleepTime = (uint64_t)BASE_ERROR_SLEEP_SEC * bootCount * 1000000ULL;  // Linear backoff
+        if (bootCount >= MAX_RETRIES) {
+            sleepTime = 60 * 60 * 1000000ULL;  // Sleep for 1 hour after max retries
+            bootCount = 0;  // Reset counter
+        }
+    }
+
+    esp_sleep_enable_timer_wakeup(sleepTime);
+    esp_deep_sleep_start();
 }
 
 void loop() {
-    delay(1000);
+    // Loop is never reached due to deep sleep
 }
