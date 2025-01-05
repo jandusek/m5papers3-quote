@@ -9,6 +9,7 @@
 #include "fonts/literata_regular_20pt7b.h"
 #include "fonts/literata_bold_20pt7b.h"
 #include "env.h"
+#include <driver/adc.h>
 
 // Configuration structure
 struct QuoteDisplayConfig {
@@ -18,6 +19,7 @@ struct QuoteDisplayConfig {
     const GFXfont* mainFont18;
     const GFXfont* boldFont18;
     float widthThreshold;
+    int32_t batteryLineY;  // Y position for battery indicator
 };
 
 // Function declarations
@@ -29,10 +31,11 @@ M5GFX display;
 QuoteDisplayConfig quoteDisplay;
 bool isWiFiConnected = false;
 
-const int QUOTE_REFRESH_INTERVAL = 60; // how often should a new quote be shown
+const int QUOTE_REFRESH_INTERVAL = 15; // how often should a new quote be shown
 const int MAX_RETRIES = 5; // how many times to retry fetching a quote when the first attempt fails
 const int BASE_ERROR_SLEEP_SEC = 60; // how long to sleep when the first attempt fails
 RTC_DATA_ATTR int bootCount = 0; // how many attempts were already made
+const int BATT_IND_HEIGHT = 3; // height of the battery indicator
 
 // Helper function to count actual newlines in text
 static int countNewlines(const String& text) {
@@ -262,6 +265,11 @@ void quoteDisplay_show(QuoteDisplayConfig* qd, const char* quote, const char* fo
     currentY += qd->display->fontHeight() * 0.5;
     drawTextLines(qd, normalizedAuthor.c_str(), &currentY, true, use20pt);
     
+    int batteryPercent = getBatteryPercentage();
+    int32_t batteryWidth = (qd->display->width() * batteryPercent) / 100;
+    Serial.printf("Drawing battery indicator: %d%% (width: %d px)\n", batteryPercent, batteryWidth);
+    qd->display->fillRect(0, qd->display->height() - BATT_IND_HEIGHT, batteryWidth, BATT_IND_HEIGHT, TFT_BLACK);
+    
     qd->display->endWrite();
     qd->display->display();
 }
@@ -310,6 +318,9 @@ bool fetchQuote(String& quote, String& followup, String& author, String& context
 }
 
 void setup() {
+    Serial.begin(115200);
+    Serial.println("Starting up...");
+    
     // Initialize display
     display.init();
     
@@ -367,4 +378,34 @@ void setup() {
 
 void loop() {
     // Loop is never reached due to deep sleep
+}
+
+// Add new function to read battery percentage
+static int getBatteryPercentage() {
+    // Configure ADC for battery reading on GPIO3 (ADC1_CHANNEL_2)
+    adc1_config_width(ADC_WIDTH_BIT_12);
+    adc1_config_channel_atten(ADC1_CHANNEL_2, ADC_ATTEN_DB_11);
+    
+    // Take multiple readings for stability
+    const int numReadings = 10;
+    int total = 0;
+    for (int i = 0; i < numReadings; i++) {
+        total += adc1_get_raw(ADC1_CHANNEL_2);  // Changed to CHANNEL_2 for GPIO3
+        delay(10);
+    }
+    int raw = total / numReadings;
+    
+    // M5Paper specific voltage calculation
+    // The battery voltage is divided by 2 before ADC
+    // ADC range is 0-4095 for 0-3.3V input
+    float voltage = (float)raw / 4095.0 * 3.3 * 2;
+    float percentage = (voltage - 3.0) / (4.2 - 3.0) * 100;
+    int finalPercentage = constrain((int)percentage, 0, 100);
+    
+    Serial.println("Battery Reading:");
+    Serial.printf("  Raw ADC (averaged): %d\n", raw);
+    Serial.printf("  Voltage: %.2fV\n", voltage);
+    Serial.printf("  Percentage: %d%%\n", finalPercentage);
+    
+    return finalPercentage;
 }
