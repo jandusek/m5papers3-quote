@@ -1,5 +1,4 @@
-#include <epdiy.h>
-#include <M5GFX.h>
+#include <M5EPD.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -13,7 +12,7 @@
 
 // Configuration structure
 struct QuoteDisplayConfig {
-    M5GFX* display;
+    M5EPD_Canvas* display;
     const GFXfont* mainFont20;
     const GFXfont* boldFont20;
     const GFXfont* mainFont18;
@@ -27,15 +26,16 @@ void connectToWiFi();
 bool fetchQuote(String& quote, String& followup, String& author, String& context);
 
 // The actual M5GFX display and config
-M5GFX display;
+M5EPD_Canvas display(&M5.EPD);
 QuoteDisplayConfig quoteDisplay;
 bool isWiFiConnected = false;
 
-const int QUOTE_REFRESH_INTERVAL = 15; // how often should a new quote be shown
+const int QUOTE_REFRESH_INTERVAL = 14400; // how often should a new quote be shown
 const int MAX_RETRIES = 5; // how many times to retry fetching a quote when the first attempt fails
 const int BASE_ERROR_SLEEP_SEC = 60; // how long to sleep when the first attempt fails
 RTC_DATA_ATTR int bootCount = 0; // how many attempts were already made
-const int BATT_IND_HEIGHT = 3; // height of the battery indicator
+const int BATT_IND_HEIGHT = 6; // height of the battery indicator
+const int32_t MANUAL_Y_OFFSET = -6;  // Adjust this value to shift text up/down
 
 // Helper function to count actual newlines in text
 static int countNewlines(const String& text) {
@@ -69,7 +69,7 @@ static String normalizeQuotes(const String& input) {
 
 // Calculate number of lines needed for text with given font
 static int32_t calculateLines(QuoteDisplayConfig* qd, const char* text, const GFXfont* font) {
-    qd->display->setFont(font);
+    qd->display->setFreeFont(font);
     String remaining = text;
     int32_t maxWidth = qd->display->width() * qd->widthThreshold;
     int lineCount = 0;
@@ -129,7 +129,7 @@ static void drawTextLines(QuoteDisplayConfig* qd, const char* text, int32_t* yPo
     const GFXfont* font = isBold ? 
         (use20pt ? qd->boldFont20 : qd->boldFont18) : 
         (use20pt ? qd->mainFont20 : qd->mainFont18);
-    qd->display->setFont(font);
+    qd->display->setFreeFont(font);
     
     String remaining = text;
     int32_t maxWidth = qd->display->width() * qd->widthThreshold;
@@ -204,30 +204,31 @@ static int32_t calculateTotalHeight(QuoteDisplayConfig* qd, const String& quote,
     const GFXfont* mainFont = use20pt ? qd->mainFont20 : qd->mainFont18;
     const GFXfont* boldFont = use20pt ? qd->boldFont20 : qd->boldFont18;
     
-    qd->display->setFont(mainFont);
+    qd->display->setFreeFont(mainFont);
     int32_t quoteLines = calculateLines(qd, quote.c_str(), mainFont);
     int32_t followupLines = followup.length() > 0 ? calculateLines(qd, followup.c_str(), mainFont) : 0;
     int numNewlines = countNewlines(quote);
     
     int32_t mainFontHeight = qd->display->fontHeight();
-    qd->display->setFont(boldFont);
+    qd->display->setFreeFont(boldFont);
     int32_t boldFontHeight = qd->display->fontHeight();
     
     const int32_t LINE_SPACING = 5;
     const int32_t NEWLINE_EXTRA = 15;
     const int32_t BLOCK_SPACING = mainFontHeight * 0.5;
     
-    int32_t quoteHeight = (quoteLines - 1) * (mainFontHeight + LINE_SPACING) + 
-                         mainFontHeight + (numNewlines * NEWLINE_EXTRA);
+    int32_t quoteHeight = (quoteLines * mainFontHeight) + 
+                         ((quoteLines - 1) * LINE_SPACING) +
+                         (numNewlines * NEWLINE_EXTRA);
     int32_t followupHeight = followupLines > 0 ? 
-        (followupLines - 1) * (mainFontHeight + LINE_SPACING) + mainFontHeight : 0;
+        (followupLines * mainFontHeight) + ((followupLines - 1) * LINE_SPACING) : 0;
     
     return quoteHeight + 
            (followupHeight > 0 ? BLOCK_SPACING + followupHeight : 0) + 
            BLOCK_SPACING + boldFontHeight;
 }
 
-void quoteDisplay_init(QuoteDisplayConfig* qd, M5GFX* display) {
+void quoteDisplay_init(QuoteDisplayConfig* qd, M5EPD_Canvas* display) {
     qd->display = display;
     qd->mainFont20 = &Literata_24pt_Regular20pt7b;
     qd->boldFont20 = &Literata_24pt_Bold20pt7b;
@@ -241,19 +242,22 @@ void quoteDisplay_show(QuoteDisplayConfig* qd, const char* quote, const char* fo
     String normalizedFollowup = followup ? normalizeQuotes(followup) : "";
     String normalizedAuthor = normalizeQuotes(author);
     
-    // Try 20pt first, fall back to 18pt if content doesn't fit
     bool use20pt = calculateTotalHeight(qd, normalizedQuote, normalizedFollowup, normalizedAuthor, true) <= 
                    qd->display->height();
     
-    // Calculate final layout with chosen font
     int32_t totalHeight = calculateTotalHeight(qd, normalizedQuote, normalizedFollowup, 
                                              normalizedAuthor, use20pt);
-    int32_t currentY = (qd->display->height() - totalHeight) / 2;
+    const GFXfont* mainFont = use20pt ? qd->mainFont20 : qd->mainFont18;
+    qd->display->setFreeFont(mainFont);
     
-    // Draw content
-    qd->display->startWrite();
-    qd->display->fillScreen(TFT_WHITE);
-    qd->display->setTextColor(TFT_BLACK);
+    int32_t visualOffset = qd->display->fontHeight() * 0.2;
+    int32_t currentY = ((qd->display->height() - totalHeight) / 2) - visualOffset + MANUAL_Y_OFFSET;
+    
+    M5.EPD.Clear(true);
+    delay(500);
+    
+    qd->display->fillCanvas(0);
+    qd->display->setTextColor(15);
     
     drawTextLines(qd, normalizedQuote.c_str(), &currentY, false, use20pt);
     
@@ -265,13 +269,16 @@ void quoteDisplay_show(QuoteDisplayConfig* qd, const char* quote, const char* fo
     currentY += qd->display->fontHeight() * 0.5;
     drawTextLines(qd, normalizedAuthor.c_str(), &currentY, true, use20pt);
     
+    // Draw battery indicator
     int batteryPercent = getBatteryPercentage();
     int32_t batteryWidth = (qd->display->width() * batteryPercent) / 100;
-    Serial.printf("Drawing battery indicator: %d%% (width: %d px)\n", batteryPercent, batteryWidth);
-    qd->display->fillRect(0, qd->display->height() - BATT_IND_HEIGHT, batteryWidth, BATT_IND_HEIGHT, TFT_BLACK);
+    qd->display->fillRect(0, qd->display->height() - BATT_IND_HEIGHT, batteryWidth, BATT_IND_HEIGHT, 15);
     
-    qd->display->endWrite();
-    qd->display->display();
+    // Push to display with enhanced refresh sequence
+    qd->display->pushCanvas(0, 0, UPDATE_MODE_GC16);
+    delay(500);
+    M5.EPD.UpdateFull(UPDATE_MODE_GC16);
+    delay(500);
 }
 
 void connectToWiFi() {
@@ -321,17 +328,19 @@ void setup() {
     Serial.begin(115200);
     Serial.println("Starting up...");
     
-    // Initialize display
-    display.init();
+    // Initialize display for M5Paper
+    M5.begin();
+    M5.EPD.SetRotation(0);
     
-    if (display.isEPD()) {
-        display.setEpdMode(epd_mode_t::epd_quality);
-    }
+    // Add thorough refresh sequence
+    M5.EPD.Clear(true);  // Full clear
+    delay(500);  // Give the display time to finish clearing
+    M5.EPD.UpdateFull(UPDATE_MODE_GC16);  // Additional full refresh
+    delay(500);
     
-    if (display.width() < display.height()) {
-        display.setRotation(display.getRotation() ^ 1);
-    }
-    
+    // Create and initialize the canvas
+    display.createCanvas(960, 540);
+    display.setTextDatum(MC_DATUM);
     quoteDisplay_init(&quoteDisplay, &display);
     
     // Connect and fetch quote
@@ -380,32 +389,13 @@ void loop() {
     // Loop is never reached due to deep sleep
 }
 
-// Add new function to read battery percentage
+// Simplify battery reading function for M5Paper
 static int getBatteryPercentage() {
-    // Configure ADC for battery reading on GPIO3 (ADC1_CHANNEL_2)
-    adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(ADC1_CHANNEL_2, ADC_ATTEN_DB_11);
-    
-    // Take multiple readings for stability
-    const int numReadings = 10;
-    int total = 0;
-    for (int i = 0; i < numReadings; i++) {
-        total += adc1_get_raw(ADC1_CHANNEL_2);  // Changed to CHANNEL_2 for GPIO3
-        delay(10);
-    }
-    int raw = total / numReadings;
-    
-    // M5Paper specific voltage calculation
-    // The battery voltage is divided by 2 before ADC
-    // ADC range is 0-4095 for 0-3.3V input
-    float voltage = (float)raw / 4095.0 * 3.3 * 2;
-    float percentage = (voltage - 3.0) / (4.2 - 3.0) * 100;
-    int finalPercentage = constrain((int)percentage, 0, 100);
-    
-    Serial.println("Battery Reading:");
-    Serial.printf("  Raw ADC (averaged): %d\n", raw);
-    Serial.printf("  Voltage: %.2fV\n", voltage);
-    Serial.printf("  Percentage: %d%%\n", finalPercentage);
-    
-    return finalPercentage;
+    // Convert raw battery reading to percentage
+    int raw = M5.getBatteryRaw();
+    // Battery voltage range is typically 3.2V (empty) to 4.2V (full)
+    // Raw values are approximately 1900 (empty) to 2500 (full)
+    int percentage = map(raw, 1900, 2500, 0, 100);
+    percentage = constrain(percentage, 0, 100);
+    return percentage;
 }
